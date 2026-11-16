@@ -1,7 +1,11 @@
 # Hermes Agent, fully containerised. State lives in the Docker-managed
 # volume `hermes-data`; nothing is written to the host filesystem.
 #
-#   docker compose up -d                          # start
+#   cargo run --release                           # start, chat, stop on /exit
+#
+# Or by hand:
+#
+#   docker compose up -d --wait                   # start
 #   docker compose exec -u hermes hermes hermes   # interactive chat
 #   docker compose logs -f                        # gateway logs
 #   docker compose down                           # stop, keep state
@@ -9,6 +13,8 @@
 #
 # The model settings below are written into /opt/data/config.yaml on every
 # start (Hermes ignores a model set only via env), so edit them here.
+# The container reports healthy only after that write, so `up --wait`
+# never hands over a chat with a stale config.
 
 services:
   hermes:
@@ -27,9 +33,22 @@ services:
         hermes config set model.base_url "$$LLM_BASE_URL" &&
         hermes config set model.api_key "$$OMLX_API_KEY" &&
         hermes config set model.default "$$LLM_MODEL_NAME" &&
+        touch /run/hermes-ready/configured &&
         exec hermes gateway run
+    healthcheck:
+      test: ["CMD", "test", "-f", "/run/hermes-ready/configured"]
+      start_period: 120s
+      start_interval: 1s
+      interval: 30s
     volumes:
       - hermes-data:/opt/data
+      # Emptied on every container start, so the marker only exists once
+      # this start's config write has finished. Explicit mode: on a restart
+      # the default is not writable by the hermes user.
+      - type: tmpfs
+        target: /run/hermes-ready
+        tmpfs:
+          mode: 01777
 
 volumes:
   hermes-data:
