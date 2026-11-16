@@ -24,7 +24,7 @@ services:
     environment:
       LLM_BASE_URL: http://host.docker.internal:2026/v1
       OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
-      LLM_MODEL_NAME: gemma-4-31B-it-MLX-8bit
+      LLM_MODEL_NAME: gemma-4-31B-it-UD-Q8_K_XL
     command:
       - sh
       - -c
