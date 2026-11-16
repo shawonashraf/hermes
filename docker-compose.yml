@@ -12,7 +12,8 @@
 #   docker compose down -v                        # stop and wipe state
 #
 # The model settings below are written into /opt/data/config.yaml on every
-# start (Hermes ignores a model set only via env), so edit them here.
+# start (Hermes ignores a model set only via env). The model name and key
+# come from .env.
 # The container reports healthy only after that write, so `up --wait`
 # never hands over a chat with a stale config.
 
@@ -24,7 +25,7 @@ services:
     environment:
       LLM_BASE_URL: http://host.docker.internal:2026/v1
       OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
-      LLM_MODEL_NAME: gemma-4-31B-it-UD-Q8_K_XL
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
     command:
       - sh
       - -c
