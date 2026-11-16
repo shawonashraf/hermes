@@ -1,0 +1,35 @@
+# Hermes Agent, fully containerised. State lives in the Docker-managed
+# volume `hermes-data`; nothing is written to the host filesystem.
+#
+#   docker compose up -d                          # start
+#   docker compose exec -u hermes hermes hermes   # interactive chat
+#   docker compose logs -f                        # gateway logs
+#   docker compose down                           # stop, keep state
+#   docker compose down -v                        # stop and wipe state
+#
+# The model settings below are written into /opt/data/config.yaml on every
+# start (Hermes ignores a model set only via env), so edit them here.
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent
+    container_name: hermes
+    restart: unless-stopped
+    environment:
+      LLM_BASE_URL: http://host.docker.internal:2026/v1
+      OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
+      LLM_MODEL_NAME: GLM-4.7-Flash-MLX-8bit
+    command:
+      - sh
+      - -c
+      - |
+        hermes config set model.provider custom &&
+        hermes config set model.base_url "$$LLM_BASE_URL" &&
+        hermes config set model.api_key "$$OMLX_API_KEY" &&
+        hermes config set model.default "$$LLM_MODEL_NAME" &&
+        exec hermes gateway run
+    volumes:
+      - hermes-data:/opt/data
+
+volumes:
+  hermes-data:
