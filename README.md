@@ -1,6 +1,7 @@
 # hermes-docker
 
-Requires Docker and Rust.
+Requires Docker, Rust, and an OpenAI-compatible model server (oMLX) on
+`localhost:2026` serving the model named in `.env`.
 
 1. Create `.env` and set the oMLX key mapping, model name and Exa API key:
 
@@ -16,7 +17,8 @@ Requires Docker and Rust.
    ```
 
 This starts Hermes and its Hindsight memory server, then opens the Hermes chat.
-`/exit` stops both containers.
+`/exit` stops both containers. The first start takes a few minutes: it pulls
+the images (about 4 GB) and installs the Hindsight plugin into Hermes.
 
 - `hermes_wd/`: Hermes's working directory; files it creates land here.
 - `hindsight_data/`: Hindsight's memory database.
