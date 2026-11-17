@@ -2,10 +2,10 @@
 
 Requires Docker and Rust.
 
-1. Map the API key to the host env var that holds it:
+1. Create `.env` and set the oMLX key mapping, model name and Exa API key:
 
    ```sh
-   cp .env.example .env   # edit the variable name if yours differs
+   cp .env.example .env
    ```
 
 2. Build and run:
@@ -15,7 +15,12 @@ Requires Docker and Rust.
    ./target/release/hermes-docker
    ```
 
-This starts the container and opens the Hermes chat. `/exit` stops the container.
+This starts Hermes and its Hindsight memory server, then opens the Hermes chat.
+`/exit` stops both containers.
+
+- `hermes_wd/`: Hermes's working directory; files it creates land here.
+- `hindsight_data/`: Hindsight's memory database.
+- Memory browser: http://localhost:9999 (while running).
 
 Optional alias:
 

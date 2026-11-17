@@ -1,31 +1,61 @@
-# Hermes Agent, fully containerised. State lives in the Docker-managed
-# volume `hermes-data`; nothing is written to the host filesystem.
+# Hermes Agent with Hindsight long-term memory, fully containerised.
 #
 #   cargo run --release                           # start, chat, stop on /exit
 #
 # Or by hand:
 #
 #   docker compose up -d --wait                   # start
-#   docker compose exec -u hermes hermes hermes   # interactive chat
-#   docker compose logs -f                        # gateway logs
+#   docker compose exec -u hermes -w /workdirectory hermes hermes   # chat
+#   docker compose logs -f                        # logs
 #   docker compose down                           # stop, keep state
-#   docker compose down -v                        # stop and wipe state
 #
-# The model settings below are written into /opt/data/config.yaml on every
-# start (Hermes ignores a model set only via env). The model name and key
-# come from .env.
-# The container reports healthy only after that write, so `up --wait`
-# never hands over a chat with a stale config.
+# Host folders (gitignored):
+#   hermes_wd/       Hermes's working directory (/workdirectory): artifacts only
+#   hindsight_data/  Hindsight's database
+# Hermes's own config, sessions and plugins stay in the `hermes-data` volume.
+#
+# Model, key and memory settings are written into /opt/data on every start
+# (Hermes ignores a model set only via env); values come from .env.
+# Hermes reports healthy only after that write, so `up --wait` never hands
+# over a chat with a stale config.
+
+x-llm-base-url: &llm_base_url http://host.docker.internal:2026/v1
 
 services:
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    container_name: hindsight
+    restart: unless-stopped
+    stop_grace_period: 75s
+    environment:
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_BASE_URL: *llm_base_url
+      HINDSIGHT_API_LLM_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
+      HINDSIGHT_API_LLM_MODEL: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
+      HINDSIGHT_API_WORKER_ID: hindsight-local
+    ports:
+      - "127.0.0.1:9999:9999"   # memory browser UI; the API stays internal
+    volumes:
+      - ./hindsight_data:/home/hindsight/.pg0
+    healthcheck:
+      # The image has no curl; use its Python.
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/health', timeout=5)"]
+      start_period: 300s   # first start initialises the database
+      start_interval: 2s
+      interval: 30s
+
   hermes:
     image: nousresearch/hermes-agent
     container_name: hermes
     restart: unless-stopped
+    depends_on:
+      hindsight:
+        condition: service_healthy
     environment:
-      LLM_BASE_URL: http://host.docker.internal:2026/v1
+      LLM_BASE_URL: *llm_base_url
       OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
       LLM_MODEL_NAME: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
+      EXA_API_KEY: ${EXA_API_KEY:?EXA_API_KEY is not set; set it in .env}
     command:
       - sh
       - -c
@@ -34,15 +64,23 @@ services:
         hermes config set model.base_url "$$LLM_BASE_URL" &&
         hermes config set model.api_key "$$OMLX_API_KEY" &&
         hermes config set model.default "$$LLM_MODEL_NAME" &&
+        hermes config set terminal.cwd /workdirectory &&
+        hermes config set web.backend exa &&
+        { hermes plugins list 2>/dev/null | grep -q 'hindsight .*enabled' ||
+          hermes plugins install hindsight --force --yes-deps --enable; } &&
+        hermes config set memory.provider hindsight &&
+        mkdir -p /opt/data/hindsight &&
+        echo '{"mode": "local_external", "api_url": "http://hindsight:8888", "bank_id": "hermes"}' > /opt/data/hindsight/config.json &&
         touch /run/hermes-ready/configured &&
         exec hermes gateway run
     healthcheck:
       test: ["CMD", "test", "-f", "/run/hermes-ready/configured"]
-      start_period: 120s
+      start_period: 300s   # first start also installs the Hindsight plugin
       start_interval: 1s
       interval: 30s
     volumes:
       - hermes-data:/opt/data
+      - ./hermes_wd:/workdirectory
       # Emptied on every container start, so the marker only exists once
       # this start's config write has finished. Explicit mode: on a restart
       # the default is not writable by the hermes user.
