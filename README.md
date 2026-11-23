@@ -16,13 +16,10 @@ Requires Docker, Rust, and an OpenAI-compatible model server (oMLX) on
    ./target/release/hermes-docker
    ```
 
-This starts Hermes and its Hindsight memory server, then opens the Hermes chat.
-`/exit` stops both containers. The first start takes a few minutes: it pulls
-the images (about 4 GB) and installs the Hindsight plugin into Hermes.
+This starts the Hermes container, then opens the Hermes chat. `/exit` stops
+the container. The first start pulls the image and takes a few minutes.
 
 - `hermes_wd/`: Hermes's working directory; files it creates land here.
-- `hindsight_data/`: Hindsight's memory database.
-- Memory browser: http://localhost:9999 (while running).
 
 Optional alias:
 

@@ -14,8 +14,8 @@ const SERVICE: &str = "hermes";
 /// Hermes's working directory inside the container (bind-mounted host folder).
 const CONTAINER_WORKDIR: &str = "/workdirectory";
 /// Host folders bind-mounted by docker-compose.yml.
-const HOST_DIRS: [&str; 2] = ["hermes_wd", "hindsight_data"];
-/// First start installs the Hindsight plugin, so allow more than a restart needs.
+const HOST_DIRS: [&str; 1] = ["hermes_wd"];
+/// First start pulls the image, so allow more than a restart needs.
 const START_TIMEOUT_SECS: &str = "300";
 
 fn main() -> ExitCode {
