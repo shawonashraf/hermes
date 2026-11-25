@@ -1,22 +1,34 @@
-# Hermes Agent, fully containerised.
+# Hermes Agent with ByteRover memory, fully containerised.
 #
 #   cargo run --release                           # start, chat, stop on /exit
 #
 # Or by hand:
 #
-#   docker compose up -d --wait                   # start
+#   docker compose up -d --wait --build           # start
 #   docker compose exec -u hermes -w /workdirectory hermes hermes   # chat
 #   docker compose logs -f                        # logs
 #   docker compose down                           # stop, keep state
 #
-# Host folder (gitignored):
-#   hermes_wd/  Hermes's working directory (/workdirectory): artifacts only
+# Host folders (gitignored):
+#   hermes_wd/        Hermes's working directory (/workdirectory): artifacts only
+#   byterover_data/   ByteRover memory: tree/ (context tree), data/ and config/
+#                     (brv's global data and config dirs: daemon, provider, settings)
 # Hermes's own config, sessions and plugins stay in the `hermes-data` volume.
 #
-# Model and key settings are written into /opt/data on every start
+# Memory: the brv daemon runs in the `byterover` service. Hermes's built-in
+# byterover provider shells out to the brv CLI, and the CLI only talks to a
+# daemon on 127.0.0.1 whose PID it can see, so byterover joins Hermes's
+# network and PID namespaces. Both containers mount the context tree and
+# brv's global dirs at the same paths. Hermes runs brv with HOME set to
+# /opt/data/home and other env stripped, so the global dirs go under that
+# home (brv's defaults) rather than an env override. Hermes runs byterover's
+# brv build from the `brv-cli` volume (refreshed on every byterover start),
+# at the path the provider looks for (~/.brv-cli, ~ = /opt/data).
+#
+# Model, key and memory settings are written into /opt/data on every start
 # (Hermes ignores a model set only via env); values come from .env.
-# Hermes reports healthy only after that write, so `up --wait` never hands
-# over a chat with a stale config.
+# Both services report healthy only after their config write, so `up --wait`
+# never hands over a chat with a stale config.
 
 x-llm-base-url: &llm_base_url http://host.docker.internal:2026/v1
 
@@ -40,6 +52,7 @@ services:
         hermes config set model.default "$$LLM_MODEL_NAME" &&
         hermes config set terminal.cwd /workdirectory &&
         hermes config set web.backend exa &&
+        hermes config set memory.provider byterover &&
         touch /run/hermes-ready/configured &&
         exec hermes gateway run
     healthcheck:
@@ -50,6 +63,10 @@ services:
     volumes:
       - hermes-data:/opt/data
       - ./hermes_wd:/workdirectory
+      - brv-cli:/opt/data/.brv-cli:ro
+      - ./byterover_data/tree:/opt/data/byterover
+      - ./byterover_data/data:/opt/data/home/.local/share/brv
+      - ./byterover_data/config:/opt/data/home/.config/brv
       # Emptied on every container start, so the marker only exists once
       # this start's config write has finished. Explicit mode: on a restart
       # the default is not writable by the hermes user.
@@ -58,5 +75,38 @@ services:
         tmpfs:
           mode: 01777
 
+  byterover:
+    build: ./byterover
+    image: hermes-docker/byterover
+    container_name: byterover
+    restart: unless-stopped
+    depends_on:
+      hermes:
+        condition: service_started
+        restart: true
+    network_mode: service:hermes
+    pid: service:hermes
+    environment:
+      LLM_BASE_URL: *llm_base_url
+      OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
+      HOME: /opt/data/home
+      NO_UPDATE_NOTIFIER: "1"
+    volumes:
+      - brv-cli:/opt/brv
+      - ./byterover_data/tree:/opt/data/byterover
+      - ./byterover_data/data:/opt/data/home/.local/share/brv
+      - ./byterover_data/config:/opt/data/home/.config/brv
+      - type: tmpfs
+        target: /run/brv-ready
+        tmpfs:
+          mode: 01777
+    healthcheck:
+      test: ["CMD", "test", "-f", "/run/brv-ready/configured"]
+      start_period: 120s
+      start_interval: 1s
+      interval: 30s
+
 volumes:
   hermes-data:
+  brv-cli:

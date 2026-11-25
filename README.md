@@ -16,10 +16,16 @@ Requires Docker, Rust, and an OpenAI-compatible model server (oMLX) on
    ./target/release/hermes-docker
    ```
 
-This starts the Hermes container, then opens the Hermes chat. `/exit` stops
-the container. The first start pulls the image and takes a few minutes.
+This starts the Hermes and ByteRover containers, then opens the Hermes chat.
+`/exit` stops both. The first start pulls the Hermes image and builds the
+ByteRover image, and takes a few minutes. After changing `byterover/`, run
+`docker compose build`.
 
 - `hermes_wd/`: Hermes's working directory; files it creates land here.
+- `byterover_data/`: Hermes's long-term memory (ByteRover, local only).
+  `tree/` holds the context tree as Markdown; `data/` and `config/` hold the
+  daemon's state, provider setup and settings. ByteRover uses the same model
+  server and model as Hermes.
 
 Optional alias:
 
