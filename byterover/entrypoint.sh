@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs the brv daemon in the foreground, keeps it from idling out, and
-# points it at the oMLX model. This container joins Hermes's network and
-# PID namespaces, so Hermes's brv CLI finds the daemon on 127.0.0.1.
+# points it at the model behind LiteLLM. This container joins Hermes's
+# network and PID namespaces, so Hermes's brv CLI finds the daemon on
+# 127.0.0.1.
 set -eu
 
 SERVICE_DIR=/usr/local/lib/brv-service
@@ -48,7 +49,7 @@ done
 
 brv providers connect openai-compatible \
   --base-url "$LLM_BASE_URL" \
-  --api-key "$OMLX_API_KEY" \
+  --api-key "$(cat "$LLM_API_KEY_FILE")" \
   --model "$LLM_MODEL_NAME"
 
 touch /run/brv-ready/configured

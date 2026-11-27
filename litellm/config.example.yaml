@@ -1,0 +1,11 @@
+# LiteLLM proxy config. Copied to data/litellm/config.yaml on first start.
+#
+# Add models and provider keys in the dashboard (http://127.0.0.1:4000/ui);
+# they are saved in LiteLLM's database. Models listed here instead are
+# read-only in the dashboard. Edit data/litellm/config.yaml, then
+# `docker compose restart litellm`.
+
+model_list: []
+
+litellm_settings:
+  drop_params: true

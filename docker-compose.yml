@@ -1,4 +1,5 @@
-# Hermes Agent with ByteRover memory, fully containerised.
+# Hermes Agent with ByteRover memory behind a LiteLLM model proxy,
+# fully containerised.
 #
 #   cargo run --release                           # start, chat, stop on /exit
 #
@@ -9,11 +10,30 @@
 #   docker compose logs -f                        # logs
 #   docker compose down                           # stop, keep state
 #
-# Host folders (gitignored):
-#   hermes_wd/        Hermes's working directory (/workdirectory): artifacts only
-#   byterover_data/   ByteRover memory: tree/ (context tree), data/ and config/
+# Host folders (gitignored). Copy these and .env to move the setup; the
+# rest is rebuilt from images on first start:
+#   data/core/        Snapshot of what Hermes needs to restore: sessions and
+#                     messages (state.db), memories, SOUL.md, config, cron,
+#                     skills, plans, pairings. Written by `core-sync`; read
+#                     back by `hermes-restore` into an empty home volume.
+#   data/litellm/     db.sql: dump of LiteLLM's database (models, provider
+#                     keys and settings added in the dashboard). Written by
+#                     `litellm-db-sync`; loaded into an empty database volume.
+#                     keys/master.key: LiteLLM's master key, generated on
+#                     first start. config.yaml: optional static config.
+#   data/byterover/   ByteRover memory: tree/ (context tree), data/ and config/
 #                     (brv's global data and config dirs: daemon, provider, settings)
-# Hermes's own config, sessions and plugins stay in the `hermes-data` volume.
+#   hermes_wd/        Hermes's working directory (/workdirectory): artifacts only
+#
+# Models: providers, base URLs, model names and their API keys are set in
+# the LiteLLM dashboard (http://127.0.0.1:4000/ui, user `admin`, password
+# in data/litellm/keys/master.key), published on the host's loopback only.
+# Hermes and ByteRover call LiteLLM at http://litellm:4000/v1 and ask for
+# LLM_MODEL_NAME (.env), a model name set there. LiteLLM generates its
+# master key on first start; Hermes and ByteRover read it from the
+# read-only keys/ mount, so no key is set by hand. The dashboard needs a
+# database, so LiteLLM runs with Postgres (`litellm-db`). Provider keys
+# saved there are encrypted with the master key: keep the two together.
 #
 # Memory: the brv daemon runs in the `byterover` service. Hermes's built-in
 # byterover provider shells out to the brv CLI, and the CLI only talks to a
@@ -25,22 +45,128 @@
 # brv build from the `brv-cli` volume (refreshed on every byterover start),
 # at the path the provider looks for (~/.brv-cli, ~ = /opt/data).
 #
-# Model, key and memory settings are written into /opt/data on every start
+# Hermes's home (/opt/data) lives in the `hermes-data` volume, not on the
+# host: its gateway refuses a home or control socket not owned by its uid,
+# and a Docker Desktop bind mount shows every file as uid 0. So the host
+# keeps a snapshot (data/core) instead of the live home.
+#
+# Model and memory settings are written into /opt/data on every start
 # (Hermes ignores a model set only via env); values come from .env.
-# Both services report healthy only after their config write, so `up --wait`
-# never hands over a chat with a stale config.
+# Hermes and byterover report healthy only after their config write, so
+# `up --wait` never hands over a chat with a stale config.
 
-x-llm-base-url: &llm_base_url http://host.docker.internal:2026/v1
+x-llm: &llm
+  LLM_BASE_URL: http://litellm:4000/v1
+  LLM_API_KEY_FILE: /run/litellm/master.key
+  LLM_MODEL_NAME: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
 
 services:
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.108.8-lts
+    container_name: litellm
+    restart: unless-stopped
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://litellm:litellm@litellm-db:5432/litellm
+      # Models added in the dashboard are saved in the database.
+      STORE_MODEL_IN_DB: "True"
+    ports:
+      - 127.0.0.1:4000:4000
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        [ -f /data/config.yaml ] || cp /seed/config.example.yaml /data/config.yaml
+        if [ ! -s /data/keys/master.key ]; then
+          mkdir -p /data/keys
+          python -c 'import secrets; print("sk-" + secrets.token_hex(32), end="")' > /data/keys/master.key
+          chmod 600 /data/keys/master.key
+          echo "litellm: generated data/litellm/keys/master.key"
+        fi
+        LITELLM_MASTER_KEY=$$(cat /data/keys/master.key)
+        export LITELLM_MASTER_KEY
+        exec litellm --config /data/config.yaml --host 0.0.0.0 --port 4000
+    volumes:
+      - ./data/litellm:/data
+      - ./litellm:/seed:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)
+      start_period: 120s
+      start_interval: 1s
+      interval: 30s
+
+  # LiteLLM's database. Lives in a volume (Postgres refuses a data dir it
+  # does not own, as on a Docker Desktop bind mount); data/litellm/db.sql
+  # holds the dump. On an empty volume Postgres runs restore.sh once.
+  # Reachable only on the compose network, hence the fixed password.
+  litellm-db:
+    image: postgres:17.11-alpine
+    container_name: litellm-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    volumes:
+      - litellm-db:/var/lib/postgresql/data
+      - ./litellm/db/restore.sh:/docker-entrypoint-initdb.d/restore.sh:ro
+      - ./data/litellm:/backup:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "litellm", "-d", "litellm"]
+      start_period: 60s
+      start_interval: 1s
+      interval: 30s
+
+  # Dumps LiteLLM's database to data/litellm/db.sql every 60 s and on stop.
+  # Stops before litellm-db (it depends on it), so the last dump is taken
+  # while Postgres is still up.
+  litellm-db-sync:
+    image: postgres:17.11-alpine
+    container_name: litellm-db-sync
+    restart: unless-stopped
+    entrypoint: ["/sync.sh"]
+    depends_on:
+      litellm:
+        condition: service_healthy
+    environment:
+      PGHOST: litellm-db
+      PGUSER: litellm
+      PGPASSWORD: litellm
+      PGDATABASE: litellm
+    volumes:
+      - ./litellm/db/sync.sh:/sync.sh:ro
+      - ./data/litellm:/backup
+
+  # Restores the home volume from data/core when it has no state.db yet
+  # (first start on a new machine); otherwise does nothing.
+  hermes-restore:
+    image: nousresearch/hermes-agent
+    entrypoint: ["python", "/core-sync/sync.py", "restore"]
+    user: "10000:10000"
+    restart: "no"
+    volumes:
+      - hermes-data:/opt/data
+      - ./data/core:/backup:ro
+      - ./core-sync:/core-sync:ro
+
   hermes:
     image: nousresearch/hermes-agent
     container_name: hermes
     restart: unless-stopped
+    depends_on:
+      hermes-restore:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_healthy
     environment:
-      LLM_BASE_URL: *llm_base_url
-      OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
-      LLM_MODEL_NAME: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
+      <<: *llm
       EXA_API_KEY: ${EXA_API_KEY:?EXA_API_KEY is not set; set it in .env}
     command:
       - sh
@@ -48,7 +174,7 @@ services:
       - |
         hermes config set model.provider custom &&
         hermes config set model.base_url "$$LLM_BASE_URL" &&
-        hermes config set model.api_key "$$OMLX_API_KEY" &&
+        hermes config set model.api_key "$$(cat "$$LLM_API_KEY_FILE")" &&
         hermes config set model.default "$$LLM_MODEL_NAME" &&
         hermes config set terminal.cwd /workdirectory &&
         hermes config set web.backend exa &&
@@ -62,11 +188,12 @@ services:
       interval: 30s
     volumes:
       - hermes-data:/opt/data
+      - ./data/litellm/keys:/run/litellm:ro
       - ./hermes_wd:/workdirectory
       - brv-cli:/opt/data/.brv-cli:ro
-      - ./byterover_data/tree:/opt/data/byterover
-      - ./byterover_data/data:/opt/data/home/.local/share/brv
-      - ./byterover_data/config:/opt/data/home/.config/brv
+      - ./data/byterover/tree:/opt/data/byterover
+      - ./data/byterover/data:/opt/data/home/.local/share/brv
+      - ./data/byterover/config:/opt/data/home/.config/brv
       # Emptied on every container start, so the marker only exists once
       # this start's config write has finished. Explicit mode: on a restart
       # the default is not writable by the hermes user.
@@ -87,16 +214,15 @@ services:
     network_mode: service:hermes
     pid: service:hermes
     environment:
-      LLM_BASE_URL: *llm_base_url
-      OMLX_API_KEY: ${OMLX_API_KEY:?OMLX_API_KEY is not set; map it in .env}
-      LLM_MODEL_NAME: ${LLM_MODEL_NAME:?LLM_MODEL_NAME is not set; set it in .env}
+      <<: *llm
       HOME: /opt/data/home
       NO_UPDATE_NOTIFIER: "1"
     volumes:
       - brv-cli:/opt/brv
-      - ./byterover_data/tree:/opt/data/byterover
-      - ./byterover_data/data:/opt/data/home/.local/share/brv
-      - ./byterover_data/config:/opt/data/home/.config/brv
+      - ./data/litellm/keys:/run/litellm:ro
+      - ./data/byterover/tree:/opt/data/byterover
+      - ./data/byterover/data:/opt/data/home/.local/share/brv
+      - ./data/byterover/config:/opt/data/home/.config/brv
       - type: tmpfs
         target: /run/brv-ready
         tmpfs:
@@ -107,6 +233,24 @@ services:
       start_interval: 1s
       interval: 30s
 
+  # Snapshots Hermes's restore data into data/core every 60 s and on stop.
+  # Stops before hermes (it depends on it), so the last snapshot is taken
+  # while Hermes is still up; the backup API keeps it consistent.
+  core-sync:
+    image: nousresearch/hermes-agent
+    container_name: core-sync
+    entrypoint: ["python", "/core-sync/sync.py", "backup"]
+    user: "10000:10000"
+    restart: unless-stopped
+    depends_on:
+      hermes:
+        condition: service_healthy
+    volumes:
+      - hermes-data:/opt/data
+      - ./data/core:/backup
+      - ./core-sync:/core-sync:ro
+
 volumes:
   hermes-data:
+  litellm-db:
   brv-cli:

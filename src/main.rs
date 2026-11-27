@@ -14,14 +14,17 @@ const SERVICE: &str = "hermes";
 /// Hermes's working directory inside the container (bind-mounted host folder).
 const CONTAINER_WORKDIR: &str = "/workdirectory";
 /// Host folders bind-mounted by docker-compose.yml.
-const HOST_DIRS: [&str; 4] = [
+const HOST_DIRS: [&str; 7] = [
     "hermes_wd",
-    "byterover_data/tree",
-    "byterover_data/data",
-    "byterover_data/config",
+    "data/core",
+    "data/litellm",
+    "data/litellm/keys",
+    "data/byterover/tree",
+    "data/byterover/data",
+    "data/byterover/config",
 ];
-/// First start pulls Hermes and builds the byterover image, so allow more
-/// than a restart needs.
+/// First start pulls the Hermes and LiteLLM images and builds the byterover
+/// image, so allow more than a restart needs.
 const START_TIMEOUT_SECS: &str = "300";
 
 fn main() -> ExitCode {
